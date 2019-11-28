@@ -103,18 +103,14 @@ class SpiderFoot:
             return None
 
         if val.startswith('@'):
-            fname = val.split('@')[1]
+            fname = val[1:]
+            self.info("Loading configuration data from: " + fname)
             try:
-                self.info("Loading configuration data from: " + fname)
-                f = open(fname, "r")
-                if splitLines:
-                    arr = f.readlines()
-                    ret = list()
-                    for x in arr:
-                        ret.append(x.rstrip('\n'))
-                else:
-                    ret = f.read()
-                return ret
+                with open(fname, "r") as fh:
+                    if splitLines:
+                        return [line.strip() for line in fh.readlines()]
+                    else:
+                        return fh.read()
             except BaseException as b:
                 if fatal:
                     self.error("Unable to open option file, " + fname + ".")
@@ -122,8 +118,8 @@ class SpiderFoot:
                     return None
 
         if val.lower().startswith('http://') or val.lower().startswith('https://'):
+            self.info("Downloading configuration data from: " + val)
             try:
-                self.info("Downloading configuration data from: " + val)
                 session = self.getSession()
                 res = session.get(val)
                 if splitLines:
@@ -162,7 +158,7 @@ class SpiderFoot:
         for row in data:
             if row[11] == "ENTITY" or row[11] == "INTERNAL":
                 # List of all valid entity values
-                if len(flt) > 0:
+                if flt:
                     if row[4] in flt or row[11] == "INTERNAL":
                         entities[row[1]] = True
                 else:
@@ -305,6 +301,7 @@ class SpiderFoot:
 
     def error(self, error, exception=True):
         if not self.opts['__logging']:
+            # TODO: should disabling '__logging' stop exceptions as well?
             return None
 
         if self.dbh is None:
@@ -795,13 +792,13 @@ class SpiderFoot:
 
     # Clean DNS results to be a simple list
     def normalizeDNS(self, res):
-        ret = list()
+        ret = set()
         for addr in res:
             if type(addr) == list:
-                ret.extend(addr)
+                ret.union(addr)
             else:
-                ret.append(addr)
-        return list(set(ret))
+                ret.add(addr)
+        return list(ret) if ret else None
 
     # Verify input is OK to execute
     def sanitiseInput(self, cmd):
@@ -915,10 +912,7 @@ class SpiderFoot:
     # Return a normalised resolution or None if not resolved.
     def resolveHost(self, host):
         try:
-            addrs = self.normalizeDNS(socket.gethostbyname_ex(host))
-            if len(addrs) > 0:
-                return list(set(addrs))
-            return None
+            return self.normalizeDNS(socket.gethostbyname_ex(host))
         except BaseException as e:
             self.debug("Unable to resolve " + str(host) + ": " + str(e))
             return None
@@ -928,10 +922,7 @@ class SpiderFoot:
         self.debug("Performing reverse-resolve of " + ipaddr)
 
         try:
-            addrs = self.normalizeDNS(socket.gethostbyaddr(ipaddr))
-            if len(addrs) > 0:
-                return list(set(addrs))
-            return None
+            return self.normalizeDNS(socket.gethostbyaddr(ipaddr))
         except BaseException as e:
             self.debug("Unable to resolve " + ipaddr + " (" + str(e) + ")")
             return None
@@ -998,7 +989,8 @@ class SpiderFoot:
                                 ret.append(host)
                     else:
                         ret.extend(names)
-        if len(ret) > 0:
+
+        if ret:
             return list(set(ret))
         return None
 
@@ -1036,7 +1028,7 @@ class SpiderFoot:
     # Find all emails within the supplied content
     # Returns an Array
     def parseEmails(self, data):
-        emails = list()
+        emails = set()
         matches = re.findall(r'([\%a-zA-Z\.0-9_\-\+]+@[a-zA-Z\.0-9\-]+\.[a-zA-Z\.0-9\-]+)', data)
 
         for match in matches:
@@ -1057,9 +1049,9 @@ class SpiderFoot:
                 self.debug("Skipped incomplete e-mail address: " + match)
                 continue
 
-            emails.append(match)
+            emails.add(match)
 
-        return list(set(emails))
+        return list(emails)
 
     # Return a PEM for a DER
     def sslDerToPem(self, der):
@@ -1196,16 +1188,13 @@ class SpiderFoot:
                 for lnk in BeautifulSoup(data, "lxml",
                     parse_only=SoupStrainer(t)).find_all(t):
                     if lnk.has_attr(tags[t]):
-                        urlsRel.append([None, lnk[tags[t]]])
+                        urlsRel.append(lnk[tags[t]])
         except BaseException as e:
             self.error("Error parsing with BeautifulSoup: " + str(e), False)
             return None
 
         # Loop through all the URLs/links found
-        for linkTuple in urlsRel:
-            # Remember the regex will return two vars (two groups captured)
-            junk = linkTuple[0]
-            link = linkTuple[1]
+        for link in urlsRel:
             if type(link) != str:
                 link = str(link)
             linkl = link.lower()
@@ -1281,9 +1270,9 @@ class SpiderFoot:
                  headOnly=False, verify=False):
         result = {
             'code': None,
-            'status': None,
             'content': None,
             'headers': None,
+            'error': None,
             'realurl': url
         }
 
@@ -1326,20 +1315,13 @@ class SpiderFoot:
                 self.debug("Not using proxy for " + host)
 
         try:
-            header = dict()
+            # Extend the user's custom headers
+            header = headers.copy() if headers else {}
             btime = time.time()
             if type(useragent) is list:
                 header['User-Agent'] = random.SystemRandom().choice(useragent)
             else:
                 header['User-Agent'] = useragent
-
-            # Add custom headers
-            if headers is not None:
-                for k in list(headers.keys()):
-                    if type(headers[k]) != str:
-                        header[k] = str(headers[k])
-                    else:
-                        header[k] = headers[k]
 
             if sizeLimit or headOnly:
                 if not noLog:
@@ -1393,16 +1375,19 @@ class SpiderFoot:
                                     timeout=timeout, verify=verify)
             else:
                 res = self.getSession().get(url, headers=header, proxies=proxies, allow_redirects=True,
-                                   cookies=cookies, timeout=timeout, verify=verify)
+                                cookies=cookies, timeout=timeout, verify=verify)
 
             result['headers'] = dict()
             for header, value in res.headers.items():
+                # TODO: when are headers ever not strings? And we do we even need this?
+                # it looks like it's not being used anywhere in the code?
                 if type(header) != str:
                     header = str(header)
 
                 if type(value) != str:
                     value = str(value)
 
+                # TODO: Why do we make the 'header' key lowercase?
                 result['headers'][header.lower()] = value
 
             # Sometimes content exceeds the size limit after decompression
@@ -1444,7 +1429,8 @@ class SpiderFoot:
                 except BaseException as f:
                     return result
             result['content'] = None
-            result['status'] = str(x)
+            result['error'] = str(x)
+
             if fatal:
                 self.fatal('URL could not be fetched (' + str(x) + ')')
 
