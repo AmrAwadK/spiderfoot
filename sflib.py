@@ -1423,18 +1423,19 @@ class SpiderFoot:
                                      useragent, headers, noLog, postData,
                                      dontMangle, sizeLimit, headOnly)
 
-            #print "FOR: " + url
-            #print "HEADERS: " + str(result['headers'])
             result['realurl'] = res.url
             result['code'] = str(res.status_code)
             if dontMangle:
                 result['content'] = res.content
             else:
                 result['content'] = res.content.decode("utf-8")
+
             if fatal:
-                res.raise_for_status()
-        except requests.exceptions.HTTPError as h:
-            self.fatal('URL could not be fetched (' + str(res.status_code) + ' / ' + res.content + ')')
+                try:
+                    res.raise_for_status()
+                except requests.exceptions.HTTPError as h:
+                    self.fatal('URL could not be fetched (' + str(res.status_code) + ' / ' + res.content + ')')
+
         except Exception as x:
             if not noLog:
                 try:
